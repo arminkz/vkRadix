@@ -1,0 +1,58 @@
+#version 450
+
+// Workgroup size is 256, 
+// which means each workgroup will have 256 threads
+layout(local_size_x = 256) in; 
+
+layout(set = 0, binding = 0) readonly buffer SrcBuf { uint src[]; };
+layout(set = 0, binding = 1) buffer HistBuf { uint hist[]; };
+
+layout(push_constant) uniform PC {
+    uint pass;
+    uint numBlocks;
+    uint numElements;
+} pc;
+
+const uint RADIX      = 256u;
+const uint BLOCK_SIZE = 16384u;
+const uint DISPATCH_X = 1024u;
+
+shared uint localHist[RADIX];
+
+void main() {
+    // Which block (workgroup) are we in?
+    uint blockIdx = gl_WorkGroupID.y * DISPATCH_X + gl_WorkGroupID.x;
+
+    // Which thread (local invocation) are we in?
+    uint tid = gl_LocalInvocationID.x;
+
+    if (blockIdx >= pc.numBlocks) return;
+
+    // Each thread will count a specific digit (0-255) in the local histogram.
+    localHist[tid] = 0u;
+
+    // Ensure all threads have initialized their local histogram before we start updating it.
+    barrier();
+    memoryBarrierShared();
+    
+    // Range of the input array that this block will process.
+    uint lo = blockIdx * BLOCK_SIZE; 
+    uint hi = min(lo + BLOCK_SIZE, pc.numElements);
+
+    // How many bits to shift to get the current digit we are counting?
+    uint shift = pc.pass * 8u;
+
+    // Each thread picks a starting element offset by its thread ID (tid),
+    // then strides by 256 (the workgroup size) to cover the whole block.
+    // Strided access helps to ensure better memory coalescing.
+    // Since there are 16,384 elements per block and 256 threads, each thread will process 64 elements.
+    for (uint i = lo + tid; i < hi; i += 256u) {
+        uint digit = (src[i] >> shift) & (RADIX - 1u); // Get the first 8 bits (0-255) after shifting.
+        atomicAdd(localHist[digit], 1u);
+    }
+    barrier();
+    memoryBarrierShared();
+
+    // Write from local histogram to global histogram. Each thread writes one digit's count.
+    hist[blockIdx * RADIX + tid] = localHist[tid];
+}

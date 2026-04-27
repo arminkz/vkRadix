@@ -1,0 +1,49 @@
+#version 450
+
+// Workgroup size is 256, 
+// which means each workgroup will have 256 threads
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer SrcBuf { uint src[]; };
+layout(set = 0, binding = 1) buffer DstBuf { uint dst[]; };
+layout(set = 0, binding = 2) readonly buffer HistBuf { uint hist[]; };
+
+layout(push_constant) uniform PC {
+    uint pass;
+    uint numBlocks;
+    uint numElements;
+} pc;
+
+const uint RADIX      = 256u;
+const uint BLOCK_SIZE = 16384u;
+const uint DISPATCH_X = 1024u;
+
+shared uint offsets[RADIX];
+
+void main() {
+    // Which block (workgroup) are we in?
+    uint blockIdx = gl_WorkGroupID.y * DISPATCH_X + gl_WorkGroupID.x;
+
+    // Which thread (local invocation) are we in?
+    uint tid = gl_LocalInvocationID.x;
+
+    if (blockIdx >= pc.numBlocks) return;
+
+    // Load scanned global offsets for this block into shared memory.
+    offsets[tid] = hist[blockIdx * RADIX + tid]; // row: blockIdx, column: tid
+    barrier();
+    memoryBarrierShared();
+
+    // Thread 0 scatters sequentially — maintains input order within each
+    // bucket, which is the stability guarantee needed for LSB radix sort.
+    if (tid == 0u) {
+        uint lo = blockIdx * BLOCK_SIZE;
+        uint hi = min(lo + BLOCK_SIZE, pc.numElements);
+        uint shift = pc.pass * 8u;
+        for (uint i = lo; i < hi; ++i) {
+            uint v = src[i];
+            uint d = (v >> shift) & (RADIX - 1u);
+            dst[offsets[d]++] = v;
+        }
+    }
+}

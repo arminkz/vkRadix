@@ -1,0 +1,53 @@
+#version 450
+
+// Workgroup size is 256, 
+// which means each workgroup will have 256 threads
+// one workgroup for each row of the histogram
+layout(local_size_x = 256) in;
+
+// Histogram buffer is a 2D array of size (numBlocks x RADIX), 
+// where numBlocks is the number of blocks (workgroups) and RADIX is 256 (the number of possible digit values).
+layout(set = 0, binding = 0) buffer HistBuf { uint hist[]; };
+
+layout(push_constant) uniform PC {
+    uint numBlocks;
+} pc;
+
+const uint RADIX = 256u;
+
+shared uint columnTotals[RADIX];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;  // one thread per digit column (0..255)
+
+    // Phase 1: per-column exclusive scan, record the column total.
+    uint running = 0u;
+    for (uint b = 0u; b < pc.numBlocks; ++b) {
+        uint idx = b * RADIX + tid;
+        uint c = hist[idx];
+        hist[idx] = running;
+        running += c;
+    }
+    columnTotals[tid] = running;
+    barrier();
+    memoryBarrierShared();
+
+    // Phase 2: exclusive prefix sum across the 256 column totals.
+    // Thread 0 does it sequentially — only 256 elements.
+    if (tid == 0u) {
+        uint sum = 0u;
+        for (uint i = 0u; i < RADIX; ++i) {
+            uint t = columnTotals[i];
+            columnTotals[i] = sum;
+            sum += t;
+        }
+    }
+    barrier();
+    memoryBarrierShared();
+
+    // Phase 3: add this digit's base offset to every entry in its column.
+    uint base = columnTotals[tid];
+    for (uint b = 0u; b < pc.numBlocks; ++b) {
+        hist[b * RADIX + tid] += base;
+    }
+}
