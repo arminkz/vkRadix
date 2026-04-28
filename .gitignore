@@ -3,3 +3,5 @@ assets/test/
 build/
 
 pipeline_cache.bin
+
+scripts/plot_*

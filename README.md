@@ -99,11 +99,11 @@ After 4 passes, the data is back in the user-supplied input buffer (4 swaps = ev
   <img src="doc/throughput_comparison.png" width="760" alt="Throughput comparison">
 </p>
 
-| Algorithm           | Time      | Throughput     | Speedup vs CPU |
-|---------------------|-----------|----------------|----------------|
-| CPU (single thread) | 2842 ms   | 35.2 M elem/s  | 1.0×           |
-| OpenMP              | 538 ms    | 185.8 M elem/s | 5.3×           |
-| Vulkan Compute      | 193 ms    | 517.2 M elem/s | 14.7×          |
+| Algorithm                    | Hardware                        | Time      | Throughput     | Speedup vs CPU |
+|------------------------------|---------------------------------|-----------|----------------|----------------|
+| CPU (single thread)          | Intel Core i7-12700K            | 2842 ms   | 35.2 M elem/s  | 1.0×           |
+| OpenMP (20 threads)          | Intel Core i7-12700K            | 538 ms    | 185.8 M elem/s | 5.3×           |
+| Vulkan Compute               | NVIDIA GeForce RTX 3060         | 193 ms    | 517.2 M elem/s | 14.7×          |
 
 ## Usage
 
