@@ -22,6 +22,13 @@ RadixSort::RadixSort(std::shared_ptr<VulkanContext> ctx, uint32_t maxElements)
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
     );
 
+    _scratchValBuf = std::make_unique<Buffer>(
+        _ctx,
+        (VkDeviceSize)maxElements * sizeof(uint32_t),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    );
+
     _histBuf = std::make_unique<Buffer>(
         _ctx,
         (VkDeviceSize)maxNumBlocks * RADIX * sizeof(uint32_t), // rows: blocks  cols: radix digits
@@ -48,10 +55,13 @@ void RadixSort::createDescriptors()
                     std::vector<DescriptorSetLayout::Binding>{ssbo(0)});
     _scatterLayout = std::make_shared<DescriptorSetLayout>(_ctx,
                     std::vector<DescriptorSetLayout::Binding>{ssbo(0), ssbo(1), ssbo(2)});
+    _scatterKVLayout = std::make_shared<DescriptorSetLayout>(_ctx,
+                    std::vector<DescriptorSetLayout::Binding>{ssbo(0), ssbo(1), ssbo(2), ssbo(3), ssbo(4)});
 
     for (int i = 0; i < 2; ++i) {
-        _histDS[i]    = std::make_unique<DescriptorSet>(_ctx, _histLayout);
-        _scatterDS[i] = std::make_unique<DescriptorSet>(_ctx, _scatterLayout);
+        _histDS[i]      = std::make_unique<DescriptorSet>(_ctx, _histLayout);
+        _scatterDS[i]   = std::make_unique<DescriptorSet>(_ctx, _scatterLayout);
+        _scatterKVDS[i] = std::make_unique<DescriptorSet>(_ctx, _scatterKVLayout);
     }
     _scanDS = std::make_unique<DescriptorSet>(_ctx, _scanLayout);
 
@@ -92,6 +102,13 @@ void RadixSort::createPipelines()
         std::vector<VkDescriptorSetLayout>{_scatterLayout->get()},
         std::vector<VkPushConstantRange>{histScatterPC}
     );
+
+    _scatterKVPipeline = std::make_unique<ComputePipeline>(
+        _ctx,
+        AssetPath::getInstance()->get("spv/radix_scatter_kv_comp.spv"),
+        std::vector<VkDescriptorSetLayout>{_scatterKVLayout->get()},
+        std::vector<VkPushConstantRange>{histScatterPC}
+    );
 }
 
 
@@ -108,9 +125,27 @@ void RadixSort::updateDescriptorSets(VkBuffer inputBuffer)
 }
 
 
+void RadixSort::updateKVDescriptorSets(VkBuffer keyBuf, VkBuffer valBuf)
+{
+    VkDescriptorBufferInfo inBuf    { keyBuf,                      0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo scrBuf   { _scratchBuf->getBuffer(),    0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo hisBuf   { _histBuf->getBuffer(),       0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo valIn    { valBuf,                      0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo scrValBuf{ _scratchValBuf->getBuffer(), 0, VK_WHOLE_SIZE };
+
+    _histDS[0]->update({{0, inBuf},  {1, hisBuf}});
+    _histDS[1]->update({{0, scrBuf}, {1, hisBuf}});
+    _scatterDS[0]->update({{0, inBuf},  {1, scrBuf}, {2, hisBuf}});
+    _scatterDS[1]->update({{0, scrBuf}, {1, inBuf},  {2, hisBuf}});
+    _scatterKVDS[0]->update({{0, inBuf},  {1, scrBuf}, {2, hisBuf}, {3, valIn},    {4, scrValBuf}});
+    _scatterKVDS[1]->update({{0, scrBuf}, {1, inBuf},  {2, hisBuf}, {3, scrValBuf},{4, valIn}});
+}
+
+
 void RadixSort::recordPass(VkCommandBuffer cmd, uint32_t pass,
                            uint32_t numBlocks, uint32_t numElements,
-                           uint32_t dispatchX, uint32_t dispatchY)
+                           uint32_t dispatchX, uint32_t dispatchY,
+                           bool kv)
 {
     // Zero out the histogram buffer 
     vkCmdFillBuffer(cmd, _histBuf->getBuffer(), 0, VK_WHOLE_SIZE, 0u);
@@ -143,12 +178,13 @@ void RadixSort::recordPass(VkCommandBuffer cmd, uint32_t pass,
     VulkanHelper::barrierComputeToCompute(cmd);
 
     // Dispatch scatter pass
-    _scatterPipeline->bind(cmd);
-    VkDescriptorSet scatterDS = _scatterDS[pass & 1u]->get();
+    ComputePipeline* scatterPL = kv ? _scatterKVPipeline.get() : _scatterPipeline.get();
+    VkDescriptorSet scatterDS  = kv ? _scatterKVDS[pass & 1u]->get() : _scatterDS[pass & 1u]->get();
+    scatterPL->bind(cmd);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            _scatterPipeline->getPipelineLayout(),
+                            scatterPL->getPipelineLayout(),
                             0, 1, &scatterDS, 0, nullptr);
-    vkCmdPushConstants(cmd, _scatterPipeline->getPipelineLayout(),
+    vkCmdPushConstants(cmd, scatterPL->getPipelineLayout(),
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdDispatch(cmd, dispatchX, dispatchY, 1);
 }
@@ -164,8 +200,23 @@ void RadixSort::recordSort(VkCommandBuffer cmd, VkBuffer inputBuffer, uint32_t n
 
     for (uint32_t p = 0; p < PASSES; ++p) {
         recordPass(cmd, p, numBlocks, numElements, dispatchX, dispatchY);
-        if (p != PASSES - 1) {
+        if (p != PASSES - 1)
             VulkanHelper::barrierComputeToCompute(cmd);
-        }
+    }
+}
+
+
+void RadixSort::recordSort(VkCommandBuffer cmd, VkBuffer keyBuf, VkBuffer valBuf, uint32_t numElements)
+{
+    updateKVDescriptorSets(keyBuf, valBuf);
+
+    const uint32_t numBlocks = (numElements + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    const uint32_t dispatchX = std::min(numBlocks, DISPATCH_X);
+    const uint32_t dispatchY = (numBlocks + DISPATCH_X - 1) / DISPATCH_X;
+
+    for (uint32_t p = 0; p < PASSES; ++p) {
+        recordPass(cmd, p, numBlocks, numElements, dispatchX, dispatchY, /*kv=*/true);
+        if (p != PASSES - 1)
+            VulkanHelper::barrierComputeToCompute(cmd);
     }
 }

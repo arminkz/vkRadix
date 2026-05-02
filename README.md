@@ -111,8 +111,14 @@ After 4 passes, the data is back in the user-supplied input buffer (4 swaps = ev
 
 ```cpp
 RadixSort sorter(ctx, maxElements);          // pre-allocates scratch + histogram
-sorter.recordSort(cmd, inputBuffer, count);  // 4 passes, 12 dispatches total
-// after the command buffer is submitted, inputBuffer holds the sorted data
+
+// Key-only sort
+sorter.recordSort(cmd, keyBuffer, count);    // 4 passes, 12 dispatches total
+// after submission, keyBuffer holds the sorted keys
+
+// Key-value sort
+sorter.recordSort(cmd, keyBuffer, valBuffer, count);
+// after submission, keyBuffer is sorted and valBuffer is permuted to match
 ```
 
-The input buffer must be created with `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` and large enough for `count` `uint32_t`s.
+All buffers must be created with `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` and hold at least `count` `uint32_t`s. The same `RadixSort` object supports both modes — scratch buffers for both keys and values are pre-allocated at construction time.

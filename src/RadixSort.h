@@ -23,45 +23,51 @@ public:
     RadixSort(const RadixSort&) = delete;
     RadixSort& operator=(const RadixSort&) = delete;
 
-    // Records all Vulkan commands (4 passes x histogram+scan+scatter) into cmd.
-    // inputBuffer must have VK_BUFFER_USAGE_STORAGE_BUFFER_BIT and hold at
-    // least numElements × sizeof(uint32_t) bytes. After the submitted commands
-    // complete on the GPU, inputBuffer contains the sorted data.
+    // Key-only sort. inputBuffer is sorted in-place after submitted commands complete.
     void recordSort(VkCommandBuffer cmd, VkBuffer inputBuffer, uint32_t numElements);
+
+    // Key-value sort. Keys are sorted; values are permuted identically.
+    void recordSort(VkCommandBuffer cmd, VkBuffer keyBuf, VkBuffer valBuf, uint32_t numElements);
 
 private:
     std::shared_ptr<VulkanContext> _ctx;
     uint32_t _maxElements;
 
-    std::unique_ptr<Buffer> _scratchBuf;  // device-local ping-pong buffer
-    std::unique_ptr<Buffer> _histBuf;     // numBlocks*256 uint32, STORAGE+TRANSFER_DST
+    std::unique_ptr<Buffer> _scratchBuf;     // key ping-pong scratch
+    std::unique_ptr<Buffer> _scratchValBuf;  // value ping-pong scratch (KV mode)
+    std::unique_ptr<Buffer> _histBuf;        // numBlocks*256 uint32, STORAGE+TRANSFER_DST
 
     std::shared_ptr<DescriptorSetLayout> _histLayout;
     std::shared_ptr<DescriptorSetLayout> _scanLayout;
     std::shared_ptr<DescriptorSetLayout> _scatterLayout;
+    std::shared_ptr<DescriptorSetLayout> _scatterKVLayout;
 
-    // _histDS[0]: src=inputBuffer, hist=_histBuf   (passes 0,2)
-    // _histDS[1]: src=_scratchBuf, hist=_histBuf   (passes 1,3)
+    // _histDS[0]: src=keyBuf,     hist=_histBuf   (passes 0,2)
+    // _histDS[1]: src=_scratchBuf, hist=_histBuf  (passes 1,3)
     std::unique_ptr<DescriptorSet> _histDS[2];
 
     // Scan descriptor set — binding is always _histBuf, wired once.
     std::unique_ptr<DescriptorSet> _scanDS;
 
-    // _scatterDS[0]: src=inputBuffer, dst=_scratchBuf, hist=_histBuf  (passes 0,2)
-    // _scatterDS[1]: src=_scratchBuf, dst=inputBuffer, hist=_histBuf  (passes 1,3)
+    // _scatterDS[0]: src=keyBuf,      dst=_scratchBuf, hist=_histBuf  (passes 0,2)
+    // _scatterDS[1]: src=_scratchBuf, dst=keyBuf,      hist=_histBuf  (passes 1,3)
     std::unique_ptr<DescriptorSet> _scatterDS[2];
 
-    void createDescriptors();
-    void updateDescriptorSets(VkBuffer inputBuffer);
+    // KV variants — same ping-pong pattern, additionally carry valBuf / _scratchValBuf
+    std::unique_ptr<DescriptorSet> _scatterKVDS[2];
 
+    void createDescriptors();
+    void updateDescriptorSets(VkBuffer keyBuf);
+    void updateKVDescriptorSets(VkBuffer keyBuf, VkBuffer valBuf);
 
     std::unique_ptr<ComputePipeline> _histPipeline;
     std::unique_ptr<ComputePipeline> _scanPipeline;
     std::unique_ptr<ComputePipeline> _scatterPipeline;
+    std::unique_ptr<ComputePipeline> _scatterKVPipeline;
     void createPipelines();
-
 
     void recordPass(VkCommandBuffer cmd, uint32_t pass,
                     uint32_t numBlocks, uint32_t numElements,
-                    uint32_t dispatchX, uint32_t dispatchY);
+                    uint32_t dispatchX, uint32_t dispatchY,
+                    bool kv = false);
 };

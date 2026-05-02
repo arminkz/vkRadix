@@ -1,0 +1,45 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer SrcKeys { uint srcKeys[]; };
+layout(set = 0, binding = 1) buffer DstKeys          { uint dstKeys[]; };
+layout(set = 0, binding = 2) readonly buffer HistBuf { uint hist[];    };
+layout(set = 0, binding = 3) readonly buffer SrcVals { uint srcVals[]; };
+layout(set = 0, binding = 4) buffer DstVals          { uint dstVals[]; };
+
+layout(push_constant) uniform PC {
+    uint pass;
+    uint numBlocks;
+    uint numElements;
+} pc;
+
+const uint RADIX      = 256u;
+const uint BLOCK_SIZE = 16384u;
+const uint DISPATCH_X = 1024u;
+
+shared uint offsets[RADIX];
+
+void main() {
+    uint blockIdx = gl_WorkGroupID.y * DISPATCH_X + gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+
+    if (blockIdx >= pc.numBlocks) return;
+
+    offsets[tid] = hist[blockIdx * RADIX + tid];
+    barrier();
+    memoryBarrierShared();
+
+    if (tid == 0u) {
+        uint lo = blockIdx * BLOCK_SIZE;
+        uint hi = min(lo + BLOCK_SIZE, pc.numElements);
+        uint shift = pc.pass * 8u;
+        for (uint i = lo; i < hi; ++i) {
+            uint v = srcKeys[i];
+            uint d = (v >> shift) & (RADIX - 1u);
+            dstKeys[offsets[d]] = v;
+            dstVals[offsets[d]] = srcVals[i];
+            offsets[d]++;
+        }
+    }
+}

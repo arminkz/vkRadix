@@ -78,9 +78,7 @@ namespace VulkanHelper {
     VkFormat findDepthFormat(const std::shared_ptr<VulkanContext>& ctx);
     VkSampleCountFlagBits getMaxMsaaSampleCount(const std::shared_ptr<VulkanContext>& ctx);
     
-    bool hasStencilComponent(VkFormat format);
-
-    std::string formatToString(VkFormat format);
+    uint32_t alignedSize(uint32_t value, uint32_t alignment);
     
     std::string imageLayoutToString(VkImageLayout layout);
 
@@ -88,7 +86,7 @@ namespace VulkanHelper {
     void barrierComputeToVertex(VkCommandBuffer cmd, VkBuffer vertexBuffer);
     void barrierFillToCompute(VkCommandBuffer cmd);
 
-    uint32_t alignedSize(uint32_t value, uint32_t alignment);
-
     VkFormat convertToUnormFormat(VkFormat format);
+    bool hasStencilComponent(VkFormat format);
+    std::string formatToString(VkFormat format);
 }
